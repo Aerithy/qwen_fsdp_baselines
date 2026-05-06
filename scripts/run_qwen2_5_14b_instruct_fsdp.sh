@@ -2,7 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="/root/miniconda3/envs/ytli_test/bin/python"
+
+# Use the currently activated python by default.
+# You can override by exporting PYTHON_BIN=/path/to/python
+PYTHON_BIN="${PYTHON_BIN:-$(command -v python)}"
 CONFIG="$ROOT_DIR/configs/qwen2_5_14b_instruct_pretrain.yaml"
 
 get_cfg() {
