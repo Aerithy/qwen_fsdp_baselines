@@ -12,6 +12,7 @@ import json
 import math
 import os
 import random
+import time
 from dataclasses import dataclass
 from typing import Iterable, Iterator, List, Optional
 
@@ -56,6 +57,8 @@ class TrainConfig:
     fp16: bool
     bf16: bool
     activation_checkpointing: bool
+    hf_download_retries: int
+    hf_download_retry_backoff: float
 
 
 def parse_args() -> TrainConfig:
@@ -85,6 +88,21 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--bf16", action="store_true")
     parser.add_argument("--activation-checkpointing", action="store_true")
+
+    # Hugging Face download resilience (helps when multiple ranks start at once)
+    parser.add_argument(
+        "--hf-download-retries",
+        type=int,
+        default=int(os.environ.get("HF_DOWNLOAD_RETRIES", "3")),
+        help="Retries for Hugging Face model/tokenizer downloads.",
+    )
+    parser.add_argument(
+        "--hf-download-retry-backoff",
+        type=float,
+        default=float(os.environ.get("HF_DOWNLOAD_RETRY_BACKOFF", "2.0")),
+        help="Base backoff seconds between download retries (exponential).",
+    )
+
     args = parser.parse_args()
     dataset_config = args.dataset_config or None
 
@@ -114,6 +132,8 @@ def parse_args() -> TrainConfig:
         fp16=args.fp16,
         bf16=args.bf16,
         activation_checkpointing=args.activation_checkpointing,
+        hf_download_retries=args.hf_download_retries,
+        hf_download_retry_backoff=args.hf_download_retry_backoff,
     )
 
 
@@ -185,8 +205,68 @@ def build_model(cfg: TrainConfig):
     return model
 
 
+def _retry(fn, *, retries: int, backoff: float, what: str):
+    """Simple exponential backoff retry wrapper."""
+    last_err: Optional[BaseException] = None
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt >= retries:
+                break
+            sleep_s = backoff * (2**attempt)
+            # Avoid log spam from all ranks by printing only on rank0 when possible.
+            if dist.is_available() and dist.is_initialized():
+                if dist.get_rank() == 0:
+                    print(f"[hf] {what} failed (attempt {attempt+1}/{retries+1}): {e}. Retrying in {sleep_s:.1f}s")
+            else:
+                print(f"[hf] {what} failed (attempt {attempt+1}/{retries+1}): {e}. Retrying in {sleep_s:.1f}s")
+            time.sleep(sleep_s)
+    assert last_err is not None
+    raise last_err
+
+
 def build_tokenizer(cfg: TrainConfig):
-    tokenizer = AutoTokenizer.from_pretrained(cfg.tokenizer_name, trust_remote_code=True)
+    """Build tokenizer in a distributed-safe way.
+
+    When launching with torchrun, multiple ranks can concurrently try to download
+    the same tokenizer files from Hugging Face Hub, which is prone to transient
+    network errors (IncompleteRead / Response ended prematurely).
+
+    Strategy:
+    - Let rank0 download first (with retries), then barrier.
+    - Other ranks wait, then load from cache/local disk.
+    """
+
+    def _load():
+        return AutoTokenizer.from_pretrained(cfg.tokenizer_name, trust_remote_code=True)
+
+    if dist.is_available() and dist.is_initialized():
+        rank = dist.get_rank()
+        if rank == 0:
+            tokenizer = _retry(
+                _load,
+                retries=cfg.hf_download_retries,
+                backoff=cfg.hf_download_retry_backoff,
+                what=f"AutoTokenizer.from_pretrained({cfg.tokenizer_name})",
+            )
+        dist.barrier()
+        if rank != 0:
+            tokenizer = _retry(
+                _load,
+                retries=cfg.hf_download_retries,
+                backoff=cfg.hf_download_retry_backoff,
+                what=f"AutoTokenizer.from_pretrained({cfg.tokenizer_name})",
+            )
+    else:
+        tokenizer = _retry(
+            _load,
+            retries=cfg.hf_download_retries,
+            backoff=cfg.hf_download_retry_backoff,
+            what=f"AutoTokenizer.from_pretrained({cfg.tokenizer_name})",
+        )
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     return tokenizer
