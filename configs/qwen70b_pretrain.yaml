@@ -1,0 +1,30 @@
+model_name: Qwen/Qwen-70B
+# tokenizer_name: Qwen/Qwen-70B
+
+dataset_name_or_path: HuggingFaceFW/fineweb
+# dataset_config: null
+text_field: text
+
+seq_len: 4096
+per_device_batch_size: 1
+grad_accum_steps: 8
+
+lr: 2.0e-4
+warmup_ratio: 0.02
+max_tokens: 100000000000
+max_steps: 0
+
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+clip_norm: 1.0
+
+log_interval: 10
+save_interval: 1000
+save_dir: checkpoints/qwen70b
+
+num_workers: 2
+use_flash_attn: true
+bf16: true
+fp16: false
+activation_checkpointing: true

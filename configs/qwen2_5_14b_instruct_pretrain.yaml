@@ -1,0 +1,30 @@
+model_name: Qwen/Qwen2.5-14B-Instruct
+# tokenizer_name: Qwen/Qwen2.5-14B-Instruct
+
+dataset_name_or_path: HuggingFaceFW/fineweb
+# dataset_config: null
+text_field: text
+
+seq_len: 4096
+per_device_batch_size: 2
+grad_accum_steps: 4
+
+lr: 2.0e-4
+warmup_ratio: 0.02
+max_tokens: 0
+max_steps: 10
+
+weight_decay: 0.1
+beta1: 0.9
+beta2: 0.95
+clip_norm: 1.0
+
+log_interval: 10
+save_interval: 1000
+save_dir: checkpoints/qwen2_5_14b_instruct
+
+num_workers: 2
+use_flash_attn: true
+bf16: true
+fp16: false
+activation_checkpointing: true
